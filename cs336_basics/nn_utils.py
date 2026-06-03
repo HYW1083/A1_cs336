@@ -73,6 +73,6 @@ def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: flo
 
     if max_l2_norm < total_norm:
         for parameter in params_with_grad:
-            parameter.grad.mul_(clip_coef)            # modify in place(using mul_()) "_" represents in-place change; do not use parameter.grad = clip_coef * parameter.grad
+            parameter.grad.mul_(clip_coef)            # modify in place(using mul_()) "_" represents in-place change; 原地修改，不创建新的对象 do not use parameter.grad = clip_coef * parameter.grad
 
 
