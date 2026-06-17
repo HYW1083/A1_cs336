@@ -129,4 +129,63 @@ class SwiGLU(torch.nn.Module):
         """
         return self.w2(silu(self.w1(x)) * self.w3(x))
 
+class RoPE(torch.nn.Module):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+        """
+        Args:
+            theta (float): Θ value for the RoPE.
+            d_k (int): Embedding dimension size for the query or key tensor.
+            max_seq_len (int): Maximum sequence length that will be input.
+            device: torch.device | None = None Device to store the buffer on
+        """
+        super().__init__()
+        if d_k % 2 != 0:
+            raise ValueError("d_k must be even for RoPE") # make sure they can do 2d coordination rotations so it must be even.
+        self.theta = theta
+        self.d_k = d_k
+        self.max_seq_len = max_seq_len
+        rotation_matrix = self.generate_rotation_matrix(theta, max_seq_len, d_k, device=device)
+        self.register_buffer("rotation_matrix", rotation_matrix, persistent=False) # avoid re-calculation everytime when calls forward(), directly lookup this table
         
+
+    def generate_rotation_block(self, theta: float, block_index: int, seq_pos: int, d_k: int, device=None) -> torch.Tensor:
+        """
+        Generate the 2x2 RoPE rotation block for one pair of hidden dimensions.
+
+        Args: 
+            theta: RoPE base frequency parameter.
+            block_index: Zero-based index of the 2D block along the hidden dimensions.
+            seq_pos: Token position i in the sequence.
+            d_k (int): Embedding dimension size for the query or key tensor.
+            device: Device to create the returned tensor.
+        
+        Returns:
+            Return the 2x2 rotation matrix used by RoPE for a single pair of dimensions.
+        """
+        angle = torch.tensor(seq_pos / (theta ** (2 * block_index / d_k)))
+        cos = torch.cos(angle)
+        sin = torch.sin(angle)
+        rotation_block = torch.stack([torch.stack([cos, -sin]), torch.stack([sin, cos])]) # because cos and sin are already tensor, do not need to reconstruct a new Tensor.
+        return rotation_block
+
+    def generate_rotation_matrix(self, theta: float, max_seq_len: int, d_k: int, device=None) -> torch.Tensor:
+        rotation_matrix_table = torch.zeros(max_seq_len, d_k, d_k, device=device, dtype=torch.float32)
+        # every operations of rotation happening the inner of each token, then computation of attention score can get real results of relative position.
+        for pos in range(max_seq_len):
+            blocks = [self.generate_rotation_block(theta, k, seq_pos=pos, d_k=d_k, device=device) for k in range(d_k // 2)]
+            rotation_matrix_table[pos] = torch.block_diag(*blocks)
+
+        return rotation_matrix_table
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        in_type = x.dtype
+        x = x.to(torch.float32)
+        if token_positions is None:
+            seq_len = x.shape[-2]
+            token_positions = torch.arange(seq_len, device=x.device)
+        
+        token_positions = token_positions.to(x.device)
+        rotation_matrix = self.rotation_matrix[token_positions] 
+        x_rotated = torch.matmul(rotation_matrix, x.unsqueeze(-1)).squeeze(-1)
+        return x_rotated.to(in_type)
+
