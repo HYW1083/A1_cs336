@@ -2,6 +2,7 @@ import torch
 import math
 from einops import einsum
 from torch import Tensor
+from cs336_basics.nn_utils import softmax
 from jaxtyping import Bool, Float, Int
 
 class Linear(torch.nn.Module):
@@ -169,8 +170,30 @@ class RoPE(torch.nn.Module):
         return rotation_block
 
     def generate_rotation_matrix(self, theta: float, max_seq_len: int, d_k: int, device=None) -> torch.Tensor:
+        """
+        Precompute the RoPE rotation matrix for every possible token position.
+
+        For each position `pos` in `[0, max_seq_len)`, this builds a block-diagonal matrix of shape `(d_k, d_k)`. Each 2x2 block rotates one
+        pair of hidden dimensions according to the RoPE angle for that position and dimension pair. 
+        
+        Args:
+            theta: RoPE base frequency parameter.
+            max_seq_len: Maximum sequence length to precompute rotations for.
+            d_k: Query/Key hidden dimension. Must be even. 两两一组做二维旋转例如：
+                (x_0, x_1)
+                (x_2, x_3)
+                (x_4, x_5)
+                ...
+                每一组用一个 2x2 旋转矩阵：
+                [sin   cos]
+                所以 d_k 必须能被 2 整除。
+            device: Device on which to create the rotation table.
+
+        Returns:
+            A tensor of shape `(max_seq_len, d_k, d_k)`, where `rotation_matrix_table[pos]` is the full RoPE rotation matrix for token position `pos`.
+        """
         rotation_matrix_table = torch.zeros(max_seq_len, d_k, d_k, device=device, dtype=torch.float32)
-        # every operations of rotation happening the inner of each token, then computation of attention score can get real results of relative position.
+        # RoPE rotates each token's query/key vector according to its position, then computation of attention score can get real results of relative position.
         for pos in range(max_seq_len):
             blocks = [self.generate_rotation_block(theta, k, seq_pos=pos, d_k=d_k, device=device) for k in range(d_k // 2)]
             rotation_matrix_table[pos] = torch.block_diag(*blocks)
@@ -178,6 +201,15 @@ class RoPE(torch.nn.Module):
         return rotation_matrix_table
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        """
+        Apply RoPE rotations to query or key vectors.
+        
+        Args:
+            x: Input query/key tensor of shape `(..., seq_len, d_k)`.
+        
+        Returns:
+            A tensor with the same shape as `x`, where each vector `x[..., i, :]` has been rotated using RoPE matrix corresponding to its token position.
+        """
         in_type = x.dtype
         x = x.to(torch.float32)
         if token_positions is None:
@@ -189,3 +221,30 @@ class RoPE(torch.nn.Module):
         x_rotated = torch.matmul(rotation_matrix, x.unsqueeze(-1)).squeeze(-1)
         return x_rotated.to(in_type)
 
+def scaled_dot_product_attention(
+    Q: Float[Tensor, " ... queries d_k"],
+    K: Float[Tensor, " ... keys d_k"],
+    V: Float[Tensor, " ... keys d_v"],
+    mask: Bool[Tensor, " ... queries keys"] | None = None,
+) -> Float[Tensor, " ... queries d_v"]:
+    """
+    Given key (K), query (Q), and value (V) tensors, return
+    the output of your scaled dot product attention implementation.
+
+    Args:
+        Q (Float[Tensor, " ... queries d_k"]): Query tensor
+        K (Float[Tensor, " ... keys d_k"]): Key tensor
+        V (Float[Tensor, " ... keys d_v"]): Values tensor
+        mask (Bool[Tensor, " ... queries keys"] | None): Mask tensor
+    Returns:
+        Float[Tensor, " ... queries d_v"]: Output of SDPA
+    """
+    d_k = Q.shape[-1]
+    scores = einsum(Q, K, "... queries d_k, ... keys d_k -> ... queries keys") / math.sqrt(d_k)
+    
+    if mask is not None:
+        scores = scores.masked_fill(~mask, float("-inf")) # fill the mask false value with -inf
+
+    attention_weights = softmax(scores, dim=-1)
+    output = einsum(attention_weights, V, "... queries keys, ... keys d_v -> ... queries d_v")
+    return output

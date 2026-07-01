@@ -11,7 +11,7 @@ from torch import Tensor
 from cs336_basics.nn_utils import softmax, cross_entropy, gradient_clipping
 from cs336_basics.data import get_batch
 from cs336_basics.optimizer import AdamW, get_lr_cosine_schedule
-from cs336_basics.model import Linear, Embedding, RMSNorm, SwiGLU, RoPE
+from cs336_basics.model import Linear, Embedding, RMSNorm, SwiGLU, RoPE, scaled_dot_product_attention
 
 def run_linear(
     d_in: int,
@@ -116,7 +116,7 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    return scaled_dot_product_attention(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
