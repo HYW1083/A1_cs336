@@ -1,6 +1,6 @@
 import torch 
 import math
-from einops import einsum
+from einops import einsum, rearrange
 from torch import Tensor
 from cs336_basics.nn_utils import softmax
 from jaxtyping import Bool, Float, Int
@@ -248,3 +248,37 @@ def scaled_dot_product_attention(
     attention_weights = softmax(scores, dim=-1)
     output = einsum(attention_weights, V, "... queries keys, ... keys d_v -> ... queries d_v")
     return output
+
+
+class MultiheadSelfAttention(torch.nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        max_seq_len: int | None = None,
+        theta: float | None = None,
+        device=None,
+        dtype=None,
+        use_rope: bool = False,
+    ):
+        super().__init__()
+        if d_model % num_heads != 0:
+            raise ValueError("d_model must be divisible by num_heads")
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_head = d_model // num_heads
+        self.use_rope = use_rope
+
+        self.q_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.k_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.v_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.output_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+
+        if use_rope: 
+            self.rope = RoPE(theta, self.d_model, max_seq_len, device=device)
+        else:
+            self.rope = None
+    
+    def forward(self,)
+
