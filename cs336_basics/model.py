@@ -206,7 +206,8 @@ class RoPE(torch.nn.Module):
         
         Args:
             x: Input query/key tensor of shape `(..., seq_len, d_k)`.
-        
+            token_positions: Integer positions for each token, shape `(..., seq_len)` or `(seq_len,)`
+
         Returns:
             A tensor with the same shape as `x`, where each vector `x[..., i, :]` has been rotated using RoPE matrix corresponding to its token position.
         """
@@ -261,14 +262,27 @@ class MultiheadSelfAttention(torch.nn.Module):
         dtype=None,
         use_rope: bool = False,
     ):
+        """
+        Causal multi-head self-attention.
+
+        Args:
+            d_model: Input and output embedding dimension.
+            num_heads: Number of attention heads. `d_model` must divide evenly by this.
+            max_seq_len: Maximum sequence length for RoPE cache, required if `use_rope=True`.
+            theta: RoPE base frequency, required if `use_rope=True`.
+            device: Device for parameters and RoPE cache.
+            dtype: Parameter dtype.
+            use_rope: Whether to apply RoPE to queries and keys.
+        """
         super().__init__()
         if d_model % num_heads != 0:
             raise ValueError("d_model must be divisible by num_heads")
+        if use_rope and (max_seq_len is None or theta is None):
+            raise ValueError("max_seq_len and theta are required when use_rope=True")
 
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_head = d_model // num_heads
-        self.use_rope = use_rope
 
         self.q_proj = Linear(d_model, d_model, device=device, dtype=dtype)
         self.k_proj = Linear(d_model, d_model, device=device, dtype=dtype)
@@ -276,9 +290,139 @@ class MultiheadSelfAttention(torch.nn.Module):
         self.output_proj = Linear(d_model, d_model, device=device, dtype=dtype)
 
         if use_rope: 
-            self.rope = RoPE(theta, self.d_model, max_seq_len, device=device)
+            self.rope = RoPE(theta, self.d_head, max_seq_len, device=device)
         else:
             self.rope = None
     
-    def forward(self,)
+    def forward(
+        self,
+        x: Float[Tensor, " ... sequence_length d_model"],
+        token_positions: Int[Tensor, " ... sequence_length"] | None = None,
+    ) -> Float[Tensor, " ... sequence_length d_model"]:
+        """
+        Args:
+            x: Input tensor of shape `(..., sequence_length, d_model)`.
+            token_positions: Optional token positions for RoPE. Usually shape
+                `(sequence_length,)` or broadcastable to `x.shape[:-1]`.
+
+        Returns:
+            Tensor of shape `(..., sequence_length, d_model)`.
+        """
+        seq_len = x.shape[-2]
+
+        # q = self.q_proj(x)
+        # k = self.k_proj(x)
+        # v = self.v_proj(x)
+        # or stretch goal:
+
+        qkv_proj = torch.cat([self.q_proj.weight, self.k_proj.weight, self.v_proj.weight], dim=0)
+        qkv = x @ qkv_proj.T
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        q = rearrange(q, "... seq (h d) -> ... h seq d", h=self.num_heads) # (batch, heads, seq_len, d_head)
+        k = rearrange(k, "... seq (h d) -> ... h seq d", h=self.num_heads)
+        v = rearrange(v, "... seq (h d) -> ... h seq d", h=self.num_heads)
+
+        if self.rope is not None:
+            if token_positions is not None and token_positions.ndim == q.ndim - 2:
+                token_positions = token_positions.unsqueeze(-2)   # shape: (batch_size, seq_len) -> (batch_size, 1, seq_len)
+            q = self.rope(q, token_positions)
+            k = self.rope(k, token_positions)
+
+        causal_mask = torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device), diagonal=1)
+        causal_mask = ~causal_mask
+
+        output = scaled_dot_product_attention(q, k, v, causal_mask)
+        output = rearrange(output, "... h seq d -> ... seq (h d)")
+        return self.output_proj(output)
+
+class TransformerBlock(torch.nn.Module):
+    def __init__(
+        self, 
+        d_model: int, 
+        num_heads: int, 
+        d_ff: int,
+        max_seq_len: int,
+        theta: float,
+        device=None,
+        dtype=None):
+        """
+        Args:
+            d_model (int): Dimensionality of the Transformer block inputs.
+            num_heads (int): Number of heads to use in multi-head self-attention. 
+            d_ff (int): Dimensionality of the position-wise feed-forward inner layer.
+            max_seq_len (int): Maximum sequence length to pre-cache.
+            theta (float): RoPE parameter.
+            device: Device on which to store the module parameters and buffers.
+            dtype: Data type of the module parameters.
+        """
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.max_seq_len = max_seq_len
+
+        self.ln1 = RMSNorm(d_model,device=device, dtype=dtype)
+        self.attn = MultiheadSelfAttention(d_model, num_heads, max_seq_len, theta, device=device, dtype=dtype, use_rope=True)
+        self.ln2 = RMSNorm(d_model,device=device, dtype=dtype)
+        self.ffn = SwiGLU(d_model, d_ff)
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None=None) -> torch.Tensor:
+        """
+        Args:
+            x: Input tensor of shape `(..., seq_len, d_model)`.
+            token_positions: Optional token position for RoPE.
+
+        Returns:
+            Tensor of shape `(..., seq_len, d_model)`.
+        """
+        x = x + self.attn(self.ln1(x), token_positions=token_positions)
+        x = x + self.ffn(self.ln2(x))
+
+        return x
+
+
+class TransformerLM(torch.nn.Module):
+    def __init__(
+        self,
+        vocab_size: int,
+        context_length: int,
+        d_model: int,
+        num_layers: int,
+        num_heads: int,
+        d_ff: int,
+        theta: float,
+        device=None,
+        dtype=None):
+        """
+        Args:
+            vocab_size (int): The number of unique items in the output vocabulary to be predicted.
+            context_length (int): The maximum number of tokens to process at once.
+            d_model (int): The dimensionality of the model embeddings and sublayer outputs.
+            num_layers (int): The number of Transformer layers to use.
+            num_heads (int): Number of heads to use in multi-headed attention. `d_model` must be evenly divisible by `num_heads`.
+            d_ff (int): Dimensionality of the feed-forward inner layer (section 3.3).
+            rope_theta (float): The RoPE $\\Theta$ parameter.
+            device: Device on which to store the module parameters and buffers.
+            dtype: Data type of the module parameters.
+        """
+        self.vocab_size = vocab_size
+        self.context_length = context_length
+        self.num_layers = num_layers
+
+        self.token_embeddings = Embedding(vocab_size, d_model,device,dtype)
+        self.attn = 
+        
+
+
+    def forward(self,):
+        """
+        return the output of running a forward pass on the input indices.
+        """
+
+    
+
+        
+
+
 
