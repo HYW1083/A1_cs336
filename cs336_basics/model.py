@@ -406,23 +406,40 @@ class TransformerLM(torch.nn.Module):
             device: Device on which to store the module parameters and buffers.
             dtype: Data type of the module parameters.
         """
-        self.vocab_size = vocab_size
+        super().__init__()
         self.context_length = context_length
-        self.num_layers = num_layers
-
-        self.token_embeddings = Embedding(vocab_size, d_model,device,dtype)
-        self.attn = 
         
+        self.token_embeddings = Embedding(vocab_size, d_model, device, dtype)
 
+        self.layers = torch.nn.ModuleList(
+            [TransformerBlock(d_model=d_model, 
+                             num_heads=num_heads, 
+                             d_ff=d_ff, 
+                             max_seq_len=context_length, 
+                             theta=theta, 
+                             device=device, 
+                             dtype=dtype) 
+            for _ in range(num_layers)])
+        
+        self.ln_final = RMSNorm(d_model, device=device, dtype=dtype)
+        self.lm_head = Linear(d_model, vocab_size, device=device, dtype=dtype)
 
-    def forward(self,):
+    def forward(self, in_indices: torch.Tensor) -> torch.Tensor:
         """
         return the output of running a forward pass on the input indices.
         """
-
-    
-
+        seq_len = in_indices.shape[-1]
+        if seq_len > self.context_length:
+            raise ValueError("Input sequence length exceeds context_length")
         
+        x = self.token_embeddings(in_indices)
+        token_positions = torch.arange(seq_len, device=in_indices.device)
 
+        for layers in self.layers:
+            x = layers(x, token_positions=token_positions)
+
+        x = self.ln_final(x)
+        return self.lm_head(x)
+    
 
 

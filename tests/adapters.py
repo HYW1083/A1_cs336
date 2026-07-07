@@ -14,13 +14,16 @@ from cs336_basics.optimizer import AdamW, get_lr_cosine_schedule
 from cs336_basics.model import (
     Linear,
     Embedding,
+    silu,
     RMSNorm,
     SwiGLU,
     RoPE,
     MultiheadSelfAttention,
     scaled_dot_product_attention,
-    TransformerBlock
+    TransformerBlock,
+    TransformerLM
 )
+from cs336_basics.serialization import save_checkpoint, load_checkpoint
 
 def run_linear(
     d_in: int,
@@ -362,8 +365,7 @@ def run_transformer_lm(
         context_length (int): The maximum number of tokens to process at once.
         d_model (int): The dimensionality of the model embeddings and sublayer outputs.
         num_layers (int): The number of Transformer layers to use.
-        num_heads (int): Number of heads to use in multi-headed attention. `d_model` must be
-            evenly divisible by `num_heads`.
+        num_heads (int): Number of heads to use in multi-headed attention. `d_model` must be evenly divisible by `num_heads`.
         d_ff (int): Dimensionality of the feed-forward inner layer (section 3.3).
         rope_theta (float): The RoPE $\\Theta$ parameter.
         weights (dict[str, Tensor]):
@@ -420,7 +422,38 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    device = weights["token_embeddings.weight"].device
+    dtype = weights["token_embeddings.weight"].dtype
+
+    transformer_lm = TransformerLM(
+        vocab_size,
+        context_length,
+        d_model,
+        num_layers,
+        num_heads,
+        d_ff,
+        theta=rope_theta,
+        device=device,
+        dtype=dtype)
+    
+    transformer_lm.token_embeddings.embedding_matrix.data = weights["token_embeddings.weight"]
+
+    for layer_index, layer in enumerate(transformer_lm.layers):
+        prefix = f"layers.{layer_index}."
+        layer.attn.q_proj.weight.data = weights[prefix + "attn.q_proj.weight"]
+        layer.attn.k_proj.weight.data = weights[prefix + "attn.k_proj.weight"]
+        layer.attn.v_proj.weight.data = weights[prefix + "attn.v_proj.weight"]
+        layer.attn.output_proj.weight.data = weights[prefix + "attn.output_proj.weight"]
+        layer.ln1.gains.data = weights[prefix + "ln1.weight"]
+        layer.ffn.w1.weight.data = weights[prefix + "ffn.w1.weight"]
+        layer.ffn.w2.weight.data = weights[prefix + "ffn.w2.weight"]
+        layer.ffn.w3.weight.data = weights[prefix + "ffn.w3.weight"]
+        layer.ln2.gains.data = weights[prefix + "ln2.weight"]
+    
+    transformer_lm.ln_final.gains.data = weights["ln_final.weight"]
+    transformer_lm.lm_head.weight.data = weights["lm_head.weight"]
+
+    return transformer_lm(in_indices.to(device))
 
 
 def run_rmsnorm(
@@ -460,7 +493,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    return silu(in_features)
 
 
 def run_get_batch(
@@ -583,7 +616,7 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    return save_checkpoint(model, optimizer, iteration, out)
 
 
 def run_load_checkpoint(
@@ -604,7 +637,7 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    return load_checkpoint(src, model, optimizer)
 
 
 def get_tokenizer(
