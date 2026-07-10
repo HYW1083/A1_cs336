@@ -177,7 +177,14 @@ def train_bpe(
     for chunk_counts in pretokens_list:
         word_counts.update(chunk_counts) # update() 合并相同的key
 
-    pair_counts = Counter()
+    """
+    Optimized method:
+    Cache pair_counts and pair_to_words so each merge only updates pretokens that contain best_pair. 
+    For affected words, remove old pair contributions, merge the word, and add the new pair contributions back. 
+    This avoids recomputing pair_counts from all pretokens after every merge.
+    """
+
+    pair_counts: Counter[tuple[bytes, bytes]] = Counter()
     pair_to_words: dict[tuple[bytes,bytes], set[tuple[bytes, ...]]] = {} 
     
     # pair_to_words[(b"l", b"o")] = {
@@ -210,9 +217,47 @@ def train_bpe(
 
         new_words_to_add: Counter[tuple[bytes, ...]] = Counter()
 
-        for old_word
+        for old_word in affected_words:
+            if old_word in word_counts:
+                count = word_counts[old_word]
+                del word_counts[old_word]    # or combine them as: count = word_counts.pop(old_word, 0) if count == 0: continue
+            else:
+                continue
 
-    # Calculate from word_counts to pair_counts each time
+            old_pair_counts= get_pair_counts(old_word)
+            # Remove this old_word's contribution from pair_counts and pair_to_words.
+            for pair, pair_count in old_pair_counts.items():
+                pair_counts[pair] -= pair_count * count
+
+                if pair_counts[pair] <= 0:
+                    del pair_counts[pair]
+
+                if pair in pair_to_words:
+                    pair_to_words[pair].discard(old_word)
+
+                    if not pair_to_words[pair]:
+                        del pair_to_words[pair]
+
+            new_word = merge_word(old_word, best_pair)
+            new_words_to_add[new_word] += count
+
+        for new_word, count in new_words_to_add.items():
+            word_counts[new_word] += count
+
+            new_pair_counts = get_pair_counts(new_word)
+
+            for pair, pair_count in new_pair_counts.items():
+                pair_counts[pair] += pair_count * count
+
+                if pair not in pair_to_words:
+                    pair_to_words[pair] = set()
+                pair_to_words[pair].add(new_word)
+
+    return vocab, merges    
+
+
+    # """ Original method: Calculate from word_counts to pair_counts each time"""
+
     # merges: list[tuple[bytes, bytes]] = []
 
     # while len(vocab) < vocab_size:
@@ -242,6 +287,6 @@ def train_bpe(
     # return vocab, merges
 
 
-class Tokenizer():
-    def __init__(self, vocab, merges, special_tokens=None):
+# class Tokenizer():
+#     def __init__(self, vocab, merges, special_tokens=None):
 
