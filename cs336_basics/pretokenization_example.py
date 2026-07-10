@@ -9,7 +9,7 @@ def find_chunk_boundaries(
 ) -> list[int]:
     """
     Chunk the file into parts that can be counted independently.
-    May return fewer chunks if the boundaries end up overlapping.
+    May return fewer chunks if the boundaries end up overlapping. FOr example, [0, 250, 250, 250, 400] -> [0, 250, 400]
     """
     assert isinstance(split_special_token, bytes), "Must represent special token as a bytestring"
 

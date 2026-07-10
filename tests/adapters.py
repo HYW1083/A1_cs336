@@ -24,6 +24,7 @@ from cs336_basics.model import (
     TransformerLM
 )
 from cs336_basics.serialization import save_checkpoint, load_checkpoint
+from cs336_basics.tokenizer import train_bpe
 
 def run_linear(
     d_in: int,
@@ -690,4 +691,4 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    return train_bpe(input_path, vocab_size, special_tokens)
