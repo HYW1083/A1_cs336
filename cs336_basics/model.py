@@ -107,18 +107,20 @@ def silu(x: torch.Tensor) -> torch.Tensor:
     return x * torch.sigmoid(x) 
 
 class SwiGLU(torch.nn.Module):
-    def __init__(self, d_model: int, d_ff: int) -> Float[Tensor, " ... d_model"]:
+    def __init__(self, d_model: int, d_ff: int, device=None, dtype=None) -> Float[Tensor, " ... d_model"]:
         """
         Args:
             d_model (int): Dimensionality of the feedforward input and output.
             d_ff (int): Dimensionality of the up-project happening internally to swiglu.
+            device: torch.device | None = None Device to store the parameters on
+            dtype: torch.dtype | None = None Data type of the parameters
         """
         super().__init__()
         self.d_model = d_model
         self.d_ff = d_ff
-        self.w1 = Linear(d_model, d_ff)
-        self.w2 = Linear(d_ff, d_model)
-        self.w3 = Linear(d_model, d_ff)
+        self.w1 = Linear(d_model, d_ff, device=device, dtype=dtype)
+        self.w2 = Linear(d_ff, d_model, device=device, dtype=dtype)
+        self.w3 = Linear(d_model, d_ff, device=device, dtype=dtype)
 
     def forward(self, x: torch.Tensor):
         """ 
@@ -365,7 +367,7 @@ class TransformerBlock(torch.nn.Module):
         self.ln1 = RMSNorm(d_model,device=device, dtype=dtype)
         self.attn = MultiheadSelfAttention(d_model, num_heads, max_seq_len, theta, device=device, dtype=dtype, use_rope=True)
         self.ln2 = RMSNorm(d_model,device=device, dtype=dtype)
-        self.ffn = SwiGLU(d_model, d_ff)
+        self.ffn = SwiGLU(d_model, d_ff, device=device, dtype=dtype)
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None=None) -> torch.Tensor:
         """
