@@ -3,6 +3,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from tqdm.auto import tqdm
+
 from cs336_basics.data import get_batch
 from cs336_basics.model import TransformerLM
 from cs336_basics.nn_utils import cross_entropy, gradient_clipping
@@ -17,42 +19,59 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # train_data = np.memmap(
+    #     ROOT / "data/tokenized/tinystories_train.bin",
+    #     dtype = "<u2",
+    #     mode = "r",
+    # )
+    # data/tokenized
+
+    # valid_data = np.memmap(
+    #     ROOT / "data/tokenized/tinystories_valid.bin",
+    #     dtype = "<u2",
+    #     mode = "r",
+    # )
+
+    # checkpoint_dir = ROOT / "checkpoints/tinystories_cosine"
+    # checkpoint_dir.mkdir(parents=True, exist_ok=True) # parents=True：如果上级目录 checkpoints 不存在，也一起创建。 exist_ok=True：如果目标文件夹已经存在，不报错。
+
     train_data = np.memmap(
-    ROOT / "data/tokenized/tinystories_train.bin",
-    dtype = "<u2",
-    mode = "r",
+        ROOT / "data/tokenized/owt_train.bin",
+        dtype = "<u2",
+        mode = "r",
     )
 
     valid_data = np.memmap(
-    ROOT / "data/tokenized/tinystories_valid.bin",
-    dtype = "<u2",
-    mode = "r",
+        ROOT / "data/tokenized/owt_valid.bin",
+        dtype = "<u2",
+        mode = "r",
     )
 
-    checkpoint_dir = ROOT / "checkpoints/tinystories_cosine"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True) # parents=True：如果上级目录 checkpoints 不存在，也一起创建。 exist_ok=True：如果目标文件夹已经存在，不报错。
+    checkpoint_dir = ROOT / "checkpoints/owt"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    vocab_size = 10000
-    batch_size = 4
-    context_length = 256
+
+    vocab_size = 32000
+    batch_size = 20
+    context_length = 512
 
     model = TransformerLM(
         vocab_size = vocab_size,
         context_length = context_length,
-        d_model = 128,
-        num_layers = 2,
-        num_heads = 4,
-        d_ff = 344,
+        d_model = 512,
+        num_layers = 8,
+        num_heads = 8,
+        d_ff = 1408,
         theta = 10000.0,
         device = device,
         dtype = torch.float32,
     )
 
-    num_steps = 10000
+    num_steps = 200000
     max_learning_rate = 3e-4
     min_learning_rate = 3e-5
-    warmup_iters = 500
-    cosine_cycle_iters = 10000
+    warmup_iters = max(1, int(num_steps * 0.02))
+    cosine_cycle_iters = num_steps
 
     optimizer = AdamW(
         model.parameters(),
@@ -86,7 +105,16 @@ def main():
 
     model.train()
 
-    for step in range(start_step, num_steps):
+    progress_bar = tqdm(
+        range(start_step, num_steps),
+        total=num_steps,
+        initial=start_step,
+        desc="Training",
+        unit="step",
+        dynamic_ncols=True,
+        )
+
+    for step in progress_bar:
         lr = get_lr_cosine_schedule(
             it=step,
             max_learning_rate=max_learning_rate,
@@ -116,11 +144,12 @@ def main():
         )
 
         optimizer.zero_grad(set_to_none = True) # zero_grad: 清除旧梯度。 set_to_none = True，表示当前没有梯度（默认）。set_to_none = False：已有梯度张量被填成零
-
-        logits = model(x)
+        # 混合精度
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            logits = model(x)
 
         loss = cross_entropy(
-            logits.reshape(-1, vocab_size), # -1 表示让 PyTorch 自动计算该维度的大小: (batch_size, context_length, vocab_size) -> (batch_size*context_length, vocab_size)
+            logits.float().reshape(-1, vocab_size), # -1 表示让 PyTorch 自动计算该维度的大小: (batch_size, context_length, vocab_size) -> (batch_size*context_length, vocab_size)
             y.reshape(-1), # target: (batch_size, context_length) -> (batch_size*context_length，)
         )
 
@@ -131,15 +160,13 @@ def main():
         gradient_clipping(model.parameters(), max_l2_norm = 1.0)
         optimizer.step()
 
-        if step == 0 or (step + 1) % 100 == 0:
-            print(
-            f"Step {step + 1}/{num_steps} | "
-            f"Training loss: {loss:.4f} | ",
-            f"Learning rate: {lr: .6e}",
-            flush = True,
+        if step == start_step or (step + 1) % 50 == 0:
+            progress_bar.set_postfix(
+                loss=f"{loss.item():.4f}",
+                lr=f"{lr:.2e}",
             )
         
-        if (step + 1) % 500 == 0 or step + 1 == num_steps:
+        if (step + 1) % 10000 == 0 or step + 1 == num_steps:
             checkpoint_path = checkpoint_dir / f"step_{step + 1}.pt"
 
             save_checkpoint(
@@ -149,9 +176,9 @@ def main():
                 out = checkpoint_path,
             )
 
-            print(f"Checkpoint saved: {checkpoint_path}")
+            tqdm.write(f"Checkpoint saved: {checkpoint_path}")
 
-        if (step + 1) % 200 == 0:
+        if (step + 1) % 1000 == 0:
             valid_loss = evaluate(
                 model=model,
                 dataset=valid_data,
@@ -160,11 +187,10 @@ def main():
                 device=device,
             )
 
-            print(
-                f"Step {step + 1}/{num_steps} | "
-                f"Validation loss: {valid_loss:.4f}",
-                flush=True,
-            )
+            tqdm.write(
+                f"Step{step + 1}/{num_steps} | "
+                f"Validation loss: {valid_loss:.4f}"
+                )
 
         # print(f"Input shape: {tuple(x.shape)}")
         # print(f"Target shape: {tuple(y.shape)}")
