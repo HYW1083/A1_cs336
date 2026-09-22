@@ -165,3 +165,4 @@ data/
 checkpoints/
 outputs/
 wandb/
+logs/
