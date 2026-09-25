@@ -1,7 +1,10 @@
 from pathlib import Path
-
 import numpy as np
 import torch
+import time 
+import wandb
+import math
+
 
 from tqdm.auto import tqdm
 
@@ -19,57 +22,60 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # train_data = np.memmap(
-    #     ROOT / "data/tokenized/tinystories_train.bin",
-    #     dtype = "<u2",
-    #     mode = "r",
-    # )
-    # data/tokenized
-
-    # valid_data = np.memmap(
-    #     ROOT / "data/tokenized/tinystories_valid.bin",
-    #     dtype = "<u2",
-    #     mode = "r",
-    # )
-
-    # checkpoint_dir = ROOT / "checkpoints/tinystories_cosine"
-    # checkpoint_dir.mkdir(parents=True, exist_ok=True) # parents=True：如果上级目录 checkpoints 不存在，也一起创建。 exist_ok=True：如果目标文件夹已经存在，不报错。
-
     train_data = np.memmap(
-        ROOT / "data/tokenized/owt_train.bin",
+        ROOT / "data/tokenized/tinystories_train.bin",
         dtype = "<u2",
         mode = "r",
     )
 
     valid_data = np.memmap(
-        ROOT / "data/tokenized/owt_valid.bin",
+        ROOT / "data/tokenized/tinystories_valid.bin",
         dtype = "<u2",
         mode = "r",
     )
 
-    checkpoint_dir = ROOT / "checkpoints/owt"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = ROOT / "checkpoints/tinystories"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True) # parents=True：如果上级目录 checkpoints 不存在，也一起创建。 exist_ok=True：如果目标文件夹已经存在，不报错。
+
+    # train_data = np.memmap(
+    #     ROOT / "data/tokenized/owt_train.bin",
+    #     dtype = "<u2",
+    #     mode = "r",
+    # )
+
+    # valid_data = np.memmap(
+    #     ROOT / "data/tokenized/owt_valid.bin",
+    #     dtype = "<u2",
+    #     mode = "r",
+    # )
+
+    # checkpoint_dir = ROOT / "checkpoints/owt"
+    # checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
 
-    vocab_size = 32000
-    batch_size = 20
-    context_length = 512
+    vocab_size = 10000
+    batch_size = 256
+    context_length = 256
 
     model = TransformerLM(
         vocab_size = vocab_size,
         context_length = context_length,
         d_model = 512,
-        num_layers = 8,
-        num_heads = 8,
-        d_ff = 1408,
+        num_layers = 4,
+        num_heads = 16,
+        d_ff = 1344,
         theta = 10000.0,
         device = device,
         dtype = torch.float32,
     )
 
-    num_steps = 200000
-    max_learning_rate = 3e-4
-    min_learning_rate = 3e-5
+    total_tokens_target = 327_680_000
+    tokens_per_step = batch_size * context_length
+    num_steps = math.ceil(total_tokens_target / tokens_per_step)
+    actual_tokens = num_steps * tokens_per_step
+
+    max_learning_rate = 8e-4
+    min_learning_rate = 1e-4
     warmup_iters = max(1, int(num_steps * 0.02))
     cosine_cycle_iters = num_steps
 
@@ -113,6 +119,31 @@ def main():
         unit="step",
         dynamic_ncols=True,
         )
+    run = wandb.init(
+        project="cs336-assignment1",
+        name="ts-baseline-lr8e-4",
+        config={
+            "dataset": "tinystories",
+            "vocab_size": vocab_size,
+            "batch_size": batch_size,
+            "context_length": context_length,
+            "num_steps": num_steps,
+            "max_lr": max_learning_rate,
+            "min_lr": min_learning_rate,
+            "warmup_iters": warmup_iters,
+            "total_tokens_target": total_tokens_target,
+            "actual_tokens": actual_tokens,
+            "d_model": 512,
+            "num_layers": 4,
+            "num_heads": 16,
+            "d_ff": 1344,
+            "seed": 42,
+            },
+        )
+    run.define_metric("global_step") # 横轴
+    run.define_metric("train/loss", step_metric="global_step") # 指定train/loss和val/loss都以global_step为横轴
+    run.define_metric("val/loss", step_metric="global_step")
+    start_time = time.perf_counter()
 
     for step in progress_bar:
         lr = get_lr_cosine_schedule(
@@ -160,6 +191,23 @@ def main():
         gradient_clipping(model.parameters(), max_l2_norm = 1.0)
         optimizer.step()
 
+        completed_step = step + 1
+        metrics = {
+            "global_step": completed_step,
+            "wall_time_sec": time.perf_counter() - start_time,
+            "tokens_seen": completed_step * batch_size * context_length,
+            "learning rate": lr,
+        }
+
+        if completed_step % 50 == 0:
+            metrics["train/loss"] = loss.item()
+        if completed_step % 1000 == 0 or completed_step == num_steps:
+            valid_loss = evaluate(model, valid_data, batch_size, context_length, device)
+            metrics["val/loss"] = valid_loss
+            metrics["wall_time_sec"] = time.perf_counter() - start_time
+        if "train/loss" in metrics or "val/loss" in metrics:
+            run.log(metrics)
+
         if step == start_step or (step + 1) % 50 == 0:
             progress_bar.set_postfix(
                 loss=f"{loss.item():.4f}",
@@ -177,20 +225,6 @@ def main():
             )
 
             tqdm.write(f"Checkpoint saved: {checkpoint_path}")
-
-        if (step + 1) % 1000 == 0:
-            valid_loss = evaluate(
-                model=model,
-                dataset=valid_data,
-                batch_size=batch_size,
-                context_length=context_length,
-                device=device,
-            )
-
-            tqdm.write(
-                f"Step{step + 1}/{num_steps} | "
-                f"Validation loss: {valid_loss:.4f}"
-                )
 
         # print(f"Input shape: {tuple(x.shape)}")
         # print(f"Target shape: {tuple(y.shape)}")

@@ -6,7 +6,7 @@ from cs336_basics.nn_utils import softmax
 from cs336_basics.tokenizer import Tokenizer
 
 ROOT = Path(__file__).resolve().parent
-PROMPT = "tell me a story."
+PROMPT = "Once upon a time there was a little girl"
 
 @torch.no_grad()
 def generate(
@@ -84,50 +84,51 @@ def main():
     torch.manual_seed(42)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # tokenizer = Tokenizer.from_files(
-    #     ROOT / "artifacts/tokenizer_ts/vocab.json",
-    #     ROOT / "artifacts/tokenizer_ts/merges.json",
-    #     special_tokens = ["<|endoftext|>"]
-    # )
-
     tokenizer = Tokenizer.from_files(
-        ROOT / "artifacts/tokenizer_owt/vocab.json",
-        ROOT / "artifacts/tokenizer_owt/merges.json",
+        ROOT / "artifacts/tokenizer_ts/vocab.json",
+        ROOT / "artifacts/tokenizer_ts/merges.json",
         special_tokens = ["<|endoftext|>"]
     )
 
-    # vocab_size = 10000
-    # context_length = 256
-
-    # model = TransformerLM(
-    #     vocab_size = vocab_size,
-    #     context_length = context_length,
-    #     d_model = 128,
-    #     num_layers = 2,
-    #     num_heads = 4,
-    #     d_ff = 344,
-    #     theta = 10000.0,
-    #     device = device,
-    #     dtype = torch.float32,
+    # tokenizer = Tokenizer.from_files(
+    #     ROOT / "artifacts/tokenizer_owt/vocab.json",
+    #     ROOT / "artifacts/tokenizer_owt/merges.json",
+    #     special_tokens = ["<|endoftext|>"]
     # )
-    vocab_size = 32000
-    context_length = 512
 
+    vocab_size = 10000
+    context_length = 256
 
     model = TransformerLM(
         vocab_size = vocab_size,
         context_length = context_length,
         d_model = 512,
-        num_layers = 8,
-        num_heads = 8,
-        d_ff = 1408,
+        num_layers = 4,
+        num_heads = 16,
+        d_ff = 1344,
         theta = 10000.0,
         device = device,
         dtype = torch.float32,
     )
 
-    # checkpoint_path = (ROOT / "checkpoints/tinystories_cosine/step_10000.pt")
-    checkpoint_path = (ROOT / "checkpoints/owt/step_200000.pt")
+    # vocab_size = 32000
+    # context_length = 512
+
+
+    # model = TransformerLM(
+    #     vocab_size = vocab_size,
+    #     context_length = context_length,
+    #     d_model = 512,
+    #     num_layers = 8,
+    #     num_heads = 8,
+    #     d_ff = 1408,
+    #     theta = 10000.0,
+    #     device = device,
+    #     dtype = torch.float32,
+    # )
+
+    checkpoint_path = (ROOT / "checkpoints/tinystories/step_40000.pt")
+    # checkpoint_path = (ROOT / "checkpoints/owt/step_200000.pt")
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model.load_state_dict(checkpoint["model"])
